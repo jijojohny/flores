@@ -1,0 +1,12 @@
+.env
+node_modules/
+dist/
+.next/
+out/
+deployments.json
+agent-ids.json
+cache/
+artifacts/
+typechain-types/
+*.local
+.DS_Store
