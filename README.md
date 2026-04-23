@@ -42,13 +42,27 @@ AnalystAgent            ──builds credit──► borrows ──► repays
 | Volume score | 0–300 | 1 pt per 0.1 USDC transacted |
 | Transaction score | 0–300 | 10 pts per transaction |
 | Repayment score | 0–300 | 150 baseline; +150 on clean repay; degrades on defaults |
+| Liquidation slash | — | Extra points subtracted from the sum after a pool liquidation (`liquidationSlashScore`) |
 
-| Tier | Score | Max Loan |
+Formula caps and divisors are **owner-tunable** on `AgentCreditScore` via `setScoreWeights`.
+
+| Tier | Score | Max borrow (defaults) |
 |---|---|---|
 | A | ≥ 750 | 100 USDC |
 | B | ≥ 500 | 50 USDC |
 | C | ≥ 250 | 20 USDC |
 | D | < 250 | — (no loans) |
+
+Tier score gates, per-tier borrow caps, and score weights are **storage parameters on `AgentCreditScore`** (`setTierParams`, `setScoreWeights`) so you can tune without redeploying the whole app—only that contract must exist at the updated address after a param change.
+
+### Pool economics (`MicroLendingPool`)
+
+- **Interest:** simple **annual APR in WAD** accrues **per block** on outstanding principal: `interest += principal * aprWad * dt / (1e18 * blocksPerYear)`. APR rises with **utilization** = `outstanding / (idle cash + outstanding)`.
+- **Repayment:** `repayLoan(agentId, maxPayment)` applies **interest first**, then principal. Pass **`maxPayment = 0`** to settle the **full** debt (principal + accrued interest).
+- **Top-ups:** `drawMore(agentId, amount)` adds principal on an open line while still before `dueBlock`, subject to the **effective** tier cap.
+- **Liquidation:** after `dueBlock`, anyone calls `liquidateOverdue` / `markDefault`. Principal + accrued interest are **written off** as bad debt, `AgentCreditScore.recordLiquidation` increments defaults and **slash score points**, and the pool applies **strikes**: each strike lowers max borrow **bps** until a **cooldown** elapses; after **`maxStrikesBeforeForever`** the agent is **frozen** from new borrows (`hasDefaulted` view). Owner tunes rates, duration, slash size, strike/cooldown rules via `setRateParams`, `setLoanDuration`, `setLiquidationParams`, etc.
+
+Redeploy contracts (or point `deployments.json` at new addresses) after pulling these protocol changes; the Arc addresses in the table above are from an **older** deployment and will not expose the new ABI until upgraded on-chain.
 
 ## Why Arc?
 
@@ -62,18 +76,18 @@ AnalystAgent            ──builds credit──► borrows ──► repays
 ```
 contracts/          Hardhat 2, Solidity 0.8.24, OpenZeppelin 5.x
   AgentCreditScore.sol    — on-chain scoring engine
-  MicroLendingPool.sol    — tier-gated USDC lending
+  MicroLendingPool.sol    — utilization-based borrow APR, accrual, partial repay, drawMore, liquidation/strikes
   IdentityRegistry.sol    — ERC-8004 agent NFTs
   ReputationRegistry.sol  — ERC-8004 reputation store
   ValidationRegistry.sol  — ERC-8004 validation proofs
   MockUSDC.sol            — ERC-20 for pool
 
 agents/             TypeScript + tsx + viem
-  DataAgent.ts        — x402 price feed server (port 3001)
-  ComputeAgent.ts     — x402 ML inference server (port 3002)
-  AnalystAgent.ts     — main loop: buy→borrow→use→repay (WS on 3003)
-  LenderAgent.ts      — deposits 200 USDC into pool on startup
-  AuditorAgent.ts     — submits ERC-8004 feedback per iteration
+  DataAgent.ts        — x402 price feed server (port 3001) + /health, /metrics
+  ComputeAgent.ts     — x402 ML inference server (port 3002) + /health, /metrics
+  AnalystAgent.ts     — main loop: buy→borrow→use→repay; HTTP + WS on 3003 (/health, /metrics)
+  LenderAgent.ts      — deposits USDC into pool on startup; HTTP 3005 (/health, /metrics)
+  AuditorAgent.ts     — ERC-8004 feedback per iteration; HTTP 3006 (/health, /metrics)
 
 dashboard/          Next.js 16 + Recharts + Tailwind
   app/api/scores/     — live credit scores from chain
@@ -81,10 +95,26 @@ dashboard/          Next.js 16 + Recharts + Tailwind
   app/api/events/     — SSE bridge to AnalystAgent WebSocket
 ```
 
+## Local config (no secrets in git)
+
+Tracked templates live at the repo root:
+
+- `deployments.example.json` — public Arc testnet addresses (same table as below).
+- `agent-ids.example.json` — placeholder NFT ids for a **compile-only** clone; replace with real ids after `register-agents.ts`.
+
+On `npm install` in `contracts/`, `agents/`, or `dashboard/`, `scripts/bootstrap-config.cjs` copies each `*.example.json` to `deployments.json` / `agent-ids.json` **only if those files are missing** (your real deploy output is never overwritten). You can also copy manually:
+
+```bash
+cp deployments.example.json deployments.json
+cp agent-ids.example.json agent-ids.json
+```
+
+`deployments.json` and `agent-ids.json` stay gitignored so local deploys and registered ids are never committed. Private keys stay in `.env` (see `.env.example`).
+
 ## Running the Demo
 
 ```bash
-# Install dependencies
+# Install dependencies (also bootstraps deployments.json + agent-ids.json when absent)
 cd contracts && npm install
 cd ../agents && npm install
 cd ../dashboard && npm install
@@ -101,7 +131,31 @@ chmod +x scripts/start-demo.sh
 ./scripts/start-demo.sh
 ```
 
-Open http://localhost:3004 to see the live dashboard.
+Open http://localhost:3004 to see the live dashboard (override with `DASHBOARD_PORT`).
+
+### Demo / stress tuning (environment)
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `DEMO_ITERATIONS` | `8` | AnalystAgent loop length |
+| `DEMO_ITERATION_DELAY_MS` | `4000` | Pause between iterations |
+| `DEMO_LOAN_AMOUNT_USDC` | `10` | Loan principal (must fit tier limit) |
+| `DEMO_REPAY_ZERO_BASED_INDEX` | `iterations - 2` | Which iteration index repays (0-based) |
+| `LENDER_DEPOSIT_USDC` | `200` | LenderAgent pool deposit |
+| `DATA_AGENT_PORT` / `COMPUTE_AGENT_PORT` / `ANALYST_AGENT_PORT` | `3001`–`3003` | Seller + analyst WS/HTTP |
+| `LENDER_AGENT_PORT` / `AUDITOR_AGENT_PORT` | `3005` / `3006` | Health + metrics HTTP |
+| `DASHBOARD_PORT` | `3004` | Next dev server |
+| `HEALTH_WAIT_TIMEOUT` | `120` | `start-demo.sh` readiness timeout (seconds) |
+
+Each agent process exposes **GET `/health`**; sellers, lender, auditor, and analyst also expose **GET `/metrics`** (counters or pool snapshot). `scripts/start-demo.sh` waits on HTTP readiness instead of fixed sleeps.
+
+## Contract tests
+
+```bash
+cd contracts && npm test
+```
+
+Hardhat covers `MicroLendingPool` and `AgentCreditScore` edge cases in `test/lending-and-credit.test.js`, plus the existing smoke path in `test/smoke.test.js`. **Forking Arc inside Hardhat’s default EVM is unreliable** (chain id / hardfork metadata); for a live read against testnet, point `cast` or a small viem script at `ARC_RPC_URL` and call `getPoolStats()` on the pool address above.
 
 ## Demo Results (Live Testnet)
 

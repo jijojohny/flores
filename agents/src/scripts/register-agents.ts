@@ -8,7 +8,10 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { identityRegistryAbi } from "../shared/contracts.js";
 import { publicClient, dataWallet, computeWallet, analystWallet, lenderWallet, auditorWallet, DATA_ADDR, COMPUTE_ADDR, ANALYST_ADDR, LENDER_ADDR, AUDITOR_ADDR } from "../chain.js";
-import { IDENTITY_REGISTRY, explorerTx } from "../config.js";
+import {
+  IDENTITY_REGISTRY, explorerTx,
+  DATA_AGENT_PORT, COMPUTE_AGENT_PORT, ANALYST_AGENT_PORT,
+} from "../config.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -22,7 +25,7 @@ const agents = [
       description: "Sells real-time BTC/ETH price data via x402",
       capabilities: ["price-feed"],
       paymentAddress: DATA_ADDR,
-      endpoints: [{ type: "http", url: "http://localhost:3001/price", x402: true }],
+      endpoints: [{ type: "http", url: `http://localhost:${DATA_AGENT_PORT}/price`, x402: true }],
     }),
   },
   {
@@ -34,7 +37,7 @@ const agents = [
       description: "Sells LLM inference via x402",
       capabilities: ["inference"],
       paymentAddress: COMPUTE_ADDR,
-      endpoints: [{ type: "http", url: "http://localhost:3002/infer", x402: true }],
+      endpoints: [{ type: "http", url: `http://localhost:${COMPUTE_AGENT_PORT}/infer`, x402: true }],
     }),
   },
   {

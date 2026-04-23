@@ -1,0 +1,11 @@
+{
+  "network": "arcTestnet",
+  "chainId": 5042002,
+  "deployedAt": "example — copy to deployments.json or run npm install / bootstrap",
+  "identityRegistry": "0x1E117C7749F512010676821343ff97A3db8CeD9E",
+  "reputationRegistry": "0xAF1D3961Dee070F7Cac04a6a9425961980f6a3CE",
+  "validationRegistry": "0x63b262071C371de5906e6c36A38B0a7Ee7a9c5C0",
+  "agentCreditScore": "0x36f77413BEC18a0a68B61Bb817522CD2d489452d",
+  "mockUsdc": "0x64D1Cf006455A4f8149838276E466c3975B3D1c7",
+  "microLendingPool": "0x3556110AC0935043Cea6D737c450bB7757b41258"
+}

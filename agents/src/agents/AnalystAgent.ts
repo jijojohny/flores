@@ -1,10 +1,11 @@
 /**
  * AnalystAgent — the transaction engine.
- * Runs 8 iterations: buys data + compute via x402, borrows at iter 4, repays at iter 7.
- * Broadcasts each report over WebSocket so the dashboard updates live.
+ * Buys data + compute via x402, may borrow from the pool when tier allows, repays on a configurable iteration.
+ * HTTP + WebSocket on ANALYST_AGENT_PORT: GET /health, GET /metrics, WS for live dashboard events.
  */
 import "dotenv/config";
-import { parseEther, formatEther } from "viem";
+import { createServer } from "http";
+import { parseEther, formatEther, maxUint256 } from "viem";
 import { WebSocketServer } from "ws";
 import { publicClient, analystWallet } from "../chain.js";
 import { mockUsdcAbi, lendingPoolAbi, creditScoreAbi } from "../shared/contracts.js";
@@ -12,17 +13,47 @@ import { x402Fetch } from "../shared/x402Client.js";
 import {
   MOCK_USDC, LENDING_POOL, CREDIT_SCORE, AGENT_IDS, ANALYST_AGENT_PORT,
   DATA_AGENT_PORT, COMPUTE_AGENT_PORT, explorerTx,
+  DEMO_ITERATIONS, DEMO_ITERATION_DELAY_MS, DEMO_LOAN_AMOUNT_USDC, DEMO_REPAY_ZERO_BASED_INDEX,
 } from "../config.js";
 import { ANALYST_ADDR } from "../chain.js";
 
-const LOAN_AMOUNT  = parseEther("10"); // 10 USDC
-const TOTAL_ITERS  = 8;
-const ITER_DELAY   = 4_000; // ms between iterations
+const LOAN_AMOUNT = parseEther(DEMO_LOAN_AMOUNT_USDC);
 
-// ─── WebSocket broadcast ──────────────────────────────────────
-const wss = new WebSocketServer({ port: ANALYST_AGENT_PORT });
-const clients = new Set<any>();
-wss.on("connection", (ws) => { clients.add(ws); ws.on("close", () => clients.delete(ws)); });
+const clients = new Set<import("ws").WebSocket>();
+let currentIteration = 0;
+
+const server = createServer((req, res) => {
+  const pathOnly = req.url?.split("?")[0] ?? "";
+  if (pathOnly === "/health") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({
+      status: "ok",
+      agent: "AnalystAgent",
+      wsClients: clients.size,
+      iteration: currentIteration,
+      totalIterations: DEMO_ITERATIONS,
+    }));
+    return;
+  }
+  if (pathOnly === "/metrics") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({
+      agent: "AnalystAgent",
+      wsClients: clients.size,
+      iteration: currentIteration,
+      totalIterations: DEMO_ITERATIONS,
+    }));
+    return;
+  }
+  res.writeHead(404);
+  res.end();
+});
+
+const wss = new WebSocketServer({ server });
+wss.on("connection", (ws) => {
+  clients.add(ws);
+  ws.on("close", () => clients.delete(ws));
+});
 
 function broadcast(event: string, data: unknown) {
   const msg = JSON.stringify({ event, data, ts: Date.now() });
@@ -31,11 +62,11 @@ function broadcast(event: string, data: unknown) {
   }
 }
 
-// ─── Main loop ────────────────────────────────────────────────
 async function run() {
   console.log("AnalystAgent starting...");
   console.log(`  Address: ${ANALYST_ADDR}`);
-  console.log(`  WS broadcast on :${ANALYST_AGENT_PORT}`);
+  console.log(`  Iterations: ${DEMO_ITERATIONS}, delay: ${DEMO_ITERATION_DELAY_MS}ms, loan: ${formatEther(LOAN_AMOUNT)} USDC, repay at index: ${DEMO_REPAY_ZERO_BASED_INDEX}`);
+  console.log(`  HTTP + WS on :${ANALYST_AGENT_PORT}`);
 
   const analystId = AGENT_IDS.analyst;
   if (!analystId) {
@@ -44,21 +75,21 @@ async function run() {
 
   let hasActiveLoan = false;
 
-  for (let i = 0; i < TOTAL_ITERS; i++) {
+  for (let i = 0; i < DEMO_ITERATIONS; i++) {
+    currentIteration = i + 1;
     console.log(`\n${"─".repeat(50)}`);
-    console.log(`Iteration ${i + 1}/${TOTAL_ITERS}`);
+    console.log(`Iteration ${i + 1}/${DEMO_ITERATIONS}`);
 
-    // ── Step 1: Check tier each iteration and borrow when eligible ───
     if (!hasActiveLoan && analystId) {
       try {
         const [currentTier, score] = await Promise.all([
-          publicClient.readContract({ address: CREDIT_SCORE, abi: creditScoreAbi, functionName: "getTier",         args: [analystId] }),
+          publicClient.readContract({ address: CREDIT_SCORE, abi: creditScoreAbi, functionName: "getTier", args: [analystId] }),
           publicClient.readContract({ address: CREDIT_SCORE, abi: creditScoreAbi, functionName: "getCreditScore", args: [analystId] }),
         ]);
         console.log(`  Credit score: ${score} | Tier: ${currentTier}`);
 
         if (["A", "B", "C"].includes(currentTier as string)) {
-          console.log("Tier eligible — requesting loan of 10 USDC from lending pool...");
+          console.log(`Tier eligible — requesting loan of ${formatEther(LOAN_AMOUNT)} USDC from lending pool...`);
           const hash = await analystWallet.writeContract({
             address: LENDING_POOL, abi: lendingPoolAbi, functionName: "requestLoan",
             args: [analystId, LOAN_AMOUNT],
@@ -67,14 +98,14 @@ async function run() {
           await publicClient.waitForTransactionReceipt({ hash });
           hasActiveLoan = true;
           console.log(`  Loan issued: ${explorerTx(hash)}`);
-          broadcast("loan_issued", { agentId: analystId.toString(), amount: "10", hash, tier: currentTier });
+          broadcast("loan_issued", { agentId: analystId.toString(), amount: formatEther(LOAN_AMOUNT), hash, tier: currentTier });
         } else {
           console.log(`  Tier D (score=${score}) — building history, will retry next iteration`);
         }
       } catch (e: any) {
         const msg = (e.message ?? "").split("\n")[0];
         if (msg.includes("Active loan already exists")) {
-          hasActiveLoan = true; // sync state from chain
+          hasActiveLoan = true;
           console.log("  Active loan detected on-chain — syncing state");
         } else {
           console.warn("  Loan check error:", msg);
@@ -82,7 +113,6 @@ async function run() {
       }
     }
 
-    // ── Step 2: Buy BTC price from DataAgent ──────────────────────────
     console.log("Buying BTC price from DataAgent...");
     let btcPrice: any = { price: 95000 };
     try {
@@ -94,7 +124,6 @@ async function run() {
       console.warn("  DataAgent error:", e.message);
     }
 
-    // ── Step 3: Buy ETH price from DataAgent ──────────────────────────
     console.log("Buying ETH price from DataAgent...");
     let ethPrice: any = { price: 3200 };
     try {
@@ -106,7 +135,6 @@ async function run() {
       console.warn("  DataAgent error:", e.message);
     }
 
-    // ── Step 4: Buy inference from ComputeAgent ────────────────────────
     console.log("Buying inference from ComputeAgent...");
     let analysis: any = { result: "Market analysis unavailable" };
     try {
@@ -124,32 +152,32 @@ async function run() {
       console.warn("  ComputeAgent error:", e.message);
     }
 
-    // ── Step 5: Compile and broadcast report ──────────────────────────
     const report = {
       iteration: i + 1,
-      btcPrice:  btcPrice.price,
-      ethPrice:  ethPrice.price,
-      analysis:  analysis.result,
+      btcPrice: btcPrice.price,
+      ethPrice: ethPrice.price,
+      analysis: analysis.result,
       timestamp: Date.now(),
     };
     console.log(`Report: BTC=$${report.btcPrice}, ETH=$${report.ethPrice}`);
     broadcast("report", report);
 
-    // ── Step 6: Repay loan on second-to-last iteration ───────────────
-    if (i === TOTAL_ITERS - 2 && hasActiveLoan && analystId) {
+    if (i === DEMO_REPAY_ZERO_BASED_INDEX && hasActiveLoan && analystId) {
       try {
-        console.log("Repaying loan...");
-        // Approve first
+        const [, , totalDue] = await publicClient.readContract({
+          address: LENDING_POOL, abi: lendingPoolAbi, functionName: "totalDebt", args: [analystId],
+        });
+        console.log(`Repaying loan (principal + accrued interest ≈ ${formatEther(totalDue)} USDC)...`);
         const approveTx = await analystWallet.writeContract({
           address: MOCK_USDC, abi: mockUsdcAbi, functionName: "approve",
-          args: [LENDING_POOL, LOAN_AMOUNT],
+          args: [LENDING_POOL, maxUint256],
           chain: analystWallet.chain, account: analystWallet.account!,
         });
         await publicClient.waitForTransactionReceipt({ hash: approveTx });
 
         const repayTx = await analystWallet.writeContract({
           address: LENDING_POOL, abi: lendingPoolAbi, functionName: "repayLoan",
-          args: [analystId],
+          args: [analystId, 0n],
           chain: analystWallet.chain, account: analystWallet.account!,
         });
         await publicClient.waitForTransactionReceipt({ hash: repayTx });
@@ -161,14 +189,17 @@ async function run() {
       }
     }
 
-    if (i < TOTAL_ITERS - 1) {
-      console.log(`Waiting ${ITER_DELAY / 1000}s before next iteration...`);
-      await new Promise((r) => setTimeout(r, ITER_DELAY));
+    if (i < DEMO_ITERATIONS - 1) {
+      console.log(`Waiting ${DEMO_ITERATION_DELAY_MS / 1000}s before next iteration...`);
+      await new Promise((r) => setTimeout(r, DEMO_ITERATION_DELAY_MS));
     }
   }
 
   console.log("\nAnalystAgent: all iterations complete.");
-  broadcast("done", { totalIterations: TOTAL_ITERS });
+  broadcast("done", { totalIterations: DEMO_ITERATIONS });
 }
 
-run().catch(console.error);
+server.listen(ANALYST_AGENT_PORT, () => {
+  console.log(`AnalystAgent listening on :${ANALYST_AGENT_PORT} (HTTP /health + WS)`);
+  run().catch(console.error);
+});

@@ -45,6 +45,8 @@ export const creditScoreAbi = [
   { name: "recordRepayment",   type: "function", stateMutability: "nonpayable", inputs: [{ name: "agentId", type: "uint256" }, { name: "onTime",    type: "bool"    }], outputs: [] },
   { name: "getCreditScore",    type: "function", stateMutability: "view",       inputs: [{ name: "agentId", type: "uint256" }],                                          outputs: [{ name: "score", type: "uint256" }] },
   { name: "getTier",           type: "function", stateMutability: "view",       inputs: [{ name: "agentId", type: "uint256" }],                                          outputs: [{ name: "",      type: "string"  }] },
+  { name: "getTierBorrowLimit", type: "function", stateMutability: "view", inputs: [{ name: "tier", type: "string" }], outputs: [{ type: "uint256" }] },
+  { name: "getTierBorrowLimitForAgent", type: "function", stateMutability: "view", inputs: [{ name: "agentId", type: "uint256" }], outputs: [{ type: "uint256" }] },
   { name: "getProfile",        type: "function", stateMutability: "view",       inputs: [{ name: "agentId", type: "uint256" }],                                          outputs: [{ name: "", type: "tuple", components: [{ name: "totalTransactions", type: "uint256" }, { name: "totalVolumeWei", type: "uint256" }, { name: "successfulRepayments", type: "uint256" }, { name: "defaults", type: "uint256" }, { name: "firstActivityBlock", type: "uint256" }, { name: "lastActivityBlock", type: "uint256" }] }] },
   { name: "TransactionRecorded", type: "event", inputs: [{ name: "agentId", type: "uint256", indexed: true }, { name: "amountWei", type: "uint256", indexed: false }, { name: "recorder", type: "address", indexed: false }] },
 ] as const;
@@ -58,15 +60,22 @@ export const mockUsdcAbi = [
 ] as const;
 
 export const lendingPoolAbi = [
-  { name: "deposit",     type: "function", stateMutability: "nonpayable", inputs: [{ name: "amount",   type: "uint256" }],                                          outputs: [] },
-  { name: "requestLoan", type: "function", stateMutability: "nonpayable", inputs: [{ name: "agentId",  type: "uint256" }, { name: "amount", type: "uint256" }],   outputs: [] },
-  { name: "repayLoan",   type: "function", stateMutability: "nonpayable", inputs: [{ name: "agentId",  type: "uint256" }],                                          outputs: [] },
-  { name: "markDefault", type: "function", stateMutability: "nonpayable", inputs: [{ name: "agentId",  type: "uint256" }],                                          outputs: [] },
-  { name: "getPoolStats",type: "function", stateMutability: "view",       inputs: [],                                                                                outputs: [{ name: "balance", type: "uint256" }, { name: "issued", type: "uint256" }, { name: "repaid", type: "uint256" }, { name: "active", type: "uint256" }] },
-  { name: "getLoan",     type: "function", stateMutability: "view",       inputs: [{ name: "agentId",  type: "uint256" }],                                          outputs: [{ name: "", type: "tuple", components: [{ name: "amount", type: "uint256" }, { name: "issuedBlock", type: "uint256" }, { name: "dueBlock", type: "uint256" }, { name: "active", type: "bool" }] }] },
-  { name: "hasDefaulted",type: "function", stateMutability: "view",       inputs: [{ name: "agentId",  type: "uint256" }],                                          outputs: [{ type: "bool" }] },
-  { name: "LoanIssued",  type: "event",    inputs: [{ name: "agentId", type: "uint256", indexed: true }, { name: "amount", type: "uint256", indexed: false }, { name: "tier", type: "string", indexed: false }] },
-  { name: "LoanRepaid",  type: "event",    inputs: [{ name: "agentId", type: "uint256", indexed: true }, { name: "amount", type: "uint256", indexed: false }, { name: "onTime", type: "bool", indexed: false }] },
+  { name: "deposit",      type: "function", stateMutability: "nonpayable", inputs: [{ name: "amount",   type: "uint256" }], outputs: [] },
+  { name: "requestLoan",  type: "function", stateMutability: "nonpayable", inputs: [{ name: "agentId",  type: "uint256" }, { name: "amount", type: "uint256" }], outputs: [] },
+  { name: "drawMore",     type: "function", stateMutability: "nonpayable", inputs: [{ name: "agentId",  type: "uint256" }, { name: "amount", type: "uint256" }], outputs: [] },
+  { name: "repayLoan",    type: "function", stateMutability: "nonpayable", inputs: [{ name: "agentId",  type: "uint256" }, { name: "maxPayment", type: "uint256" }], outputs: [] },
+  { name: "liquidateOverdue", type: "function", stateMutability: "nonpayable", inputs: [{ name: "agentId", type: "uint256" }], outputs: [] },
+  { name: "markDefault",  type: "function", stateMutability: "nonpayable", inputs: [{ name: "agentId",  type: "uint256" }], outputs: [] },
+  { name: "getPoolStats", type: "function", stateMutability: "view",       inputs: [], outputs: [{ name: "balance", type: "uint256" }, { name: "issued", type: "uint256" }, { name: "repaid", type: "uint256" }, { name: "active", type: "uint256" }] },
+  { name: "getLoan",      type: "function", stateMutability: "view",       inputs: [{ name: "agentId",  type: "uint256" }], outputs: [{ name: "", type: "tuple", components: [{ name: "principal", type: "uint256" }, { name: "interestOwed", type: "uint256" }, { name: "lastAccrualBlock", type: "uint256" }, { name: "issuedBlock", type: "uint256" }, { name: "dueBlock", type: "uint256" }, { name: "active", type: "bool" }] }] },
+  { name: "totalDebt",    type: "function", stateMutability: "view",       inputs: [{ name: "agentId", type: "uint256" }], outputs: [{ name: "principal", type: "uint256" }, { name: "interest", type: "uint256" }, { name: "total", type: "uint256" }] },
+  { name: "utilizationWad", type: "function", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { name: "currentBorrowAprWad", type: "function", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { name: "getEffectiveBorrowLimitBps", type: "function", stateMutability: "view", inputs: [{ name: "agentId", type: "uint256" }], outputs: [{ type: "uint256" }] },
+  { name: "defaultStrikeCount", type: "function", stateMutability: "view", inputs: [{ name: "agentId", type: "uint256" }], outputs: [{ type: "uint256" }] },
+  { name: "hasDefaulted", type: "function", stateMutability: "view",       inputs: [{ name: "agentId",  type: "uint256" }], outputs: [{ type: "bool" }] },
+  { name: "LoanIssued",   type: "event",    inputs: [{ name: "agentId", type: "uint256", indexed: true }, { name: "amount", type: "uint256", indexed: false }, { name: "tier", type: "string", indexed: false }] },
+  { name: "LoanRepaid",   type: "event",    inputs: [{ name: "agentId", type: "uint256", indexed: true }, { name: "principalPaid", type: "uint256", indexed: false }, { name: "interestPaid", type: "uint256", indexed: false }, { name: "closed", type: "bool", indexed: false }, { name: "onTime", type: "bool", indexed: false }] },
 ] as const;
 
 // ─── Typed contract instances ─────────────────────────────────

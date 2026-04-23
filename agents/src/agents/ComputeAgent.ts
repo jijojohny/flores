@@ -26,6 +26,7 @@ const ANALYSIS_TEMPLATES = [
 ];
 
 let templateIndex = 0;
+let paidInferencesServed = 0;
 
 function generateAnalysis(prompt: string): string {
   const template = ANALYSIS_TEMPLATES[templateIndex % ANALYSIS_TEMPLATES.length];
@@ -59,12 +60,17 @@ app.post("/infer", requirePayment(COMPUTE_ADDR, INFERENCE_PRICE_WEI), async (req
   const result = generateAnalysis(prompt);
 
   res.json({ result, model: "mock-llm-v1", timestamp: Date.now() });
+  paidInferencesServed++;
   console.log(`  [compute] Inference served to ${(req as any).payerAddress}`);
 
   recordBuyerTransaction(INFERENCE_PRICE_WEI);
 });
 
 app.get("/health", (_req, res) => res.json({ status: "ok", agent: "ComputeAgent" }));
+
+app.get("/metrics", (_req, res) => {
+  res.json({ agent: "ComputeAgent", paidInferencesServed, priceWei: INFERENCE_PRICE_WEI.toString() });
+});
 
 app.listen(COMPUTE_AGENT_PORT, () => {
   console.log(`ComputeAgent listening on :${COMPUTE_AGENT_PORT}`);

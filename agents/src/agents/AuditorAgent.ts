@@ -1,18 +1,39 @@
 /**
  * AuditorAgent — connects to AnalystAgent's WebSocket and submits ERC-8004
  * reputation feedback + validation proof after each report.
- * Generates 2 on-chain transactions per iteration = 16 total across 8 iterations.
+ * HTTP: GET /health, GET /metrics (WS connection + audit count).
  */
 import "dotenv/config";
+import express from "express";
 import { keccak256, toBytes } from "viem";
 import WebSocket from "ws";
 import { publicClient, auditorWallet } from "../chain.js";
 import { reputationRegistryAbi, validationRegistryAbi } from "../shared/contracts.js";
 import {
   REPUTATION_REGISTRY, VALIDATION_REGISTRY,
-  AGENT_IDS, ANALYST_AGENT_PORT, explorerTx,
+  AGENT_IDS, ANALYST_AGENT_PORT, AUDITOR_AGENT_PORT, explorerTx,
 } from "../config.js";
 import { AUDITOR_ADDR } from "../chain.js";
+
+let wsConnected = false;
+let reportsAudited = 0;
+
+const app = express();
+app.get("/health", (_req, res) => {
+  res.json({
+    status: "ok",
+    agent: "AuditorAgent",
+    wsConnected,
+    reportsAudited,
+  });
+});
+app.get("/metrics", (_req, res) => {
+  res.json({ agent: "AuditorAgent", wsConnected, reportsAudited });
+});
+
+app.listen(AUDITOR_AGENT_PORT, () => {
+  console.log(`AuditorAgent HTTP on :${AUDITOR_AGENT_PORT} (/health, /metrics)`);
+});
 
 async function submitFeedback(analystId: bigint, taskId: bigint, report: any) {
   const feedbackURI = `data:application/json,${JSON.stringify({ iteration: Number(taskId), passed: true })}`;
@@ -24,10 +45,10 @@ async function submitFeedback(analystId: bigint, taskId: bigint, report: any) {
     functionName: "giveFeedback",
     args: [
       analystId,
-      85n,           // value: 85/100
-      0,             // valueDecimals
-      "credit",      // tag1
-      "payment",     // tag2
+      85n,
+      0,
+      "credit",
+      "payment",
       `http://localhost:${ANALYST_AGENT_PORT}`,
       feedbackURI,
       feedbackHash,
@@ -70,6 +91,7 @@ function connect() {
   const ws = new WebSocket(`ws://localhost:${ANALYST_AGENT_PORT}`);
 
   ws.on("open", () => {
+    wsConnected = true;
     console.log(`AuditorAgent: connected. Watching for reports from AnalystAgent (${AUDITOR_ADDR})`);
   });
 
@@ -80,32 +102,31 @@ function connect() {
       const { event, data } = JSON.parse(raw.toString());
       if (event !== "report") return;
 
-      // Deduplicate — WS can deliver the same message twice
       if (processedIterations.has(data.iteration)) return;
       processedIterations.add(data.iteration);
 
       const taskId = BigInt(data.iteration);
       console.log(`\n[audit] Processing report for iteration ${data.iteration}...`);
 
-      // Submit both in sequence (each is an on-chain tx)
       await submitFeedback(analystId, taskId, data);
       await submitValidation(analystId, taskId, data);
+      reportsAudited++;
     } catch (e: any) {
       console.warn("[audit] Error processing report:", e.message);
     }
   });
 
   ws.on("close", () => {
+    wsConnected = false;
     console.log("AuditorAgent: WebSocket closed. Reconnecting in 3s...");
     setTimeout(connect, 3_000);
   });
 
-  ws.on("error", (e) => {
-    console.warn("AuditorAgent: WS error:", e.message, "— retrying in 5s");
-    setTimeout(connect, 5_000);
+  ws.on("error", () => {
+    wsConnected = false;
+    console.warn("AuditorAgent: WS error (will reconnect on close)");
   });
 }
 
 console.log("AuditorAgent starting...");
-// Give AnalystAgent 3s to start its WS server
-setTimeout(connect, 3_000);
+connect();

@@ -13,6 +13,8 @@ import { DATA_ADDR } from "../chain.js";
 
 const PRICE_WEI = parseEther("0.005"); // 0.005 USDC per query
 
+let paidQueriesServed = 0;
+
 // ─── Price cache (30s TTL) ────────────────────────────────────
 let priceCache: { btc: number; eth: number; updatedAt: number } | null = null;
 
@@ -62,6 +64,7 @@ app.get("/price", requirePayment(DATA_ADDR, PRICE_WEI), async (req, res) => {
 
   const payload = { asset, price, currency: "USD", timestamp: Date.now() };
   res.json(payload);
+  paidQueriesServed++;
   console.log(`  [data] Served ${asset} price $${price} to ${(req as any).payerAddress}`);
 
   // Fire-and-forget: record on credit score contract
@@ -69,6 +72,10 @@ app.get("/price", requirePayment(DATA_ADDR, PRICE_WEI), async (req, res) => {
 });
 
 app.get("/health", (_req, res) => res.json({ status: "ok", agent: "DataAgent" }));
+
+app.get("/metrics", (_req, res) => {
+  res.json({ agent: "DataAgent", paidQueriesServed, priceWei: PRICE_WEI.toString() });
+});
 
 app.listen(DATA_AGENT_PORT, () => {
   console.log(`DataAgent listening on :${DATA_AGENT_PORT}`);

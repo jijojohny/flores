@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { parseEther, formatEther } from "viem";
+import { formatEther, maxUint256 } from "viem";
 import { publicClient, analystWallet } from "../chain.js";
 import { mockUsdcAbi, lendingPoolAbi } from "../shared/contracts.js";
 import { MOCK_USDC, LENDING_POOL, AGENT_IDS, explorerTx } from "../config.js";
@@ -18,19 +18,24 @@ async function run() {
     return;
   }
 
+  const [, , totalDue] = await publicClient.readContract({
+    address: LENDING_POOL, abi: lendingPoolAbi, functionName: "totalDebt", args: [analystId],
+  });
+  console.log(`Total due (principal + interest): ${formatEther(totalDue)} USDC`);
+
   console.log("Approving USDC for repayment...");
   const approveTx = await analystWallet.writeContract({
     address: MOCK_USDC, abi: mockUsdcAbi, functionName: "approve",
-    args: [LENDING_POOL, parseEther("100")],
+    args: [LENDING_POOL, maxUint256],
     chain: analystWallet.chain, account: analystWallet.account!,
   });
   await publicClient.waitForTransactionReceipt({ hash: approveTx });
   console.log(`  Approved: ${explorerTx(approveTx)}`);
 
-  console.log("Repaying loan...");
+  console.log("Repaying loan (maxPayment 0 = full settle)...");
   const repayTx = await analystWallet.writeContract({
     address: LENDING_POOL, abi: lendingPoolAbi, functionName: "repayLoan",
-    args: [analystId],
+    args: [analystId, 0n],
     chain: analystWallet.chain, account: analystWallet.account!,
   });
   await publicClient.waitForTransactionReceipt({ hash: repayTx });

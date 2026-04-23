@@ -1,0 +1,7 @@
+{
+  "DataAgent": "1",
+  "ComputeAgent": "2",
+  "AnalystAgent": "3",
+  "LenderAgent": "4",
+  "AuditorAgent": "5"
+}
